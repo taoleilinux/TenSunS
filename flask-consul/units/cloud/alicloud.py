@@ -13,11 +13,18 @@ from alibabacloud_rds20140815.client import Client as Rds20140815Client
 from alibabacloud_rds20140815 import models as rds_20140815_models
 from alibabacloud_r_kvstore20150101 import models as r_kvstore_20150101_models
 from alibabacloud_r_kvstore20150101.client import Client as R_kvstore20150101Client
+from alibabacloud_credentials.client import Client as CredClient
+from alibabacloud_credentials.models import Config as CredConfig
+from alibabacloud_domain20180129.client import Client as Domain20180129Client
+from alibabacloud_tea_openapi import models as open_api_models
+from alibabacloud_domain20180129 import models as domain_20180129_models
 
-import sys,datetime,hashlib,math,traceback
+import os,sys,json,datetime,hashlib,math,traceback
 from units import consul_kv,consul_svc
 from units.cloud import sync_ecs,sync_rds,sync_redis,notify
 from units.config_log import *
+from units.query_domain import Domain
+
 
 def exp(account,collect_days,notify_days,notify_amount):
     logger.debug(f"=====【阿里云：余额与到期日统计开始：{account}】")
@@ -25,7 +32,8 @@ def exp(account,collect_days,notify_days,notify_amount):
     now = datetime.datetime.utcnow().strftime('%Y-%m-%dT16:00:00Z')
     collect = (datetime.datetime.utcnow() + datetime.timedelta(days=collect_days+1)).strftime('%Y-%m-%dT16:00:00Z')
     config = open_api_models.Config(access_key_id=ak,access_key_secret=sk)
-    config.endpoint = f'business.aliyuncs.com'
+#    config.endpoint = f'business.aliyuncs.com'
+    config.endpoint = f'business.ap-southeast-1.aliyuncs.com'
     client = BssOpenApi20171214Client(config)
     exp_config = consul_kv.get_value('ConsulManager/exp/config')
     wecomwh = exp_config.get('wecomwh','')
@@ -42,7 +50,7 @@ def exp(account,collect_days,notify_days,notify_amount):
             amount_dict = {}
             if amount < notify_amount:
                 amount_dict = {'amount':amount}
-                content = f'### 阿里云账号 {account}：\n### 可用余额：<font color=\"#ff0000\">{amount}</font> 元'
+                content = f'## 阿里云账号 {account}\n## 可用余额：<font color=\"#ff0000\">{amount}</font> 美元'
                 if exp_config['switch'] and exp_config.get('wecom',False):
                     notify.wecom(wecomwh,content)
                 if exp_config['switch'] and exp_config.get('dingding',False):
@@ -56,11 +64,13 @@ def exp(account,collect_days,notify_days,notify_amount):
     except Exception as e:
         logger.error(f'==ERROR=={e}\n{traceback.format_exc()}')
         raise
-    query_available_instances_request = bss_open_api_20171214_models.QueryAvailableInstancesRequest(renew_status='ManualRenewal',end_time_start=now,end_time_end=collect)
+#    query_available_instances_request = bss_open_api_20171214_models.QueryAvailableInstancesRequest(renew_status='ManualRenewal',end_time_start=now,end_time_end=collect)
+    query_available_instances_request = bss_open_api_20171214_models.QueryAvailableInstancesRequest(end_time_start=now,end_time_end=collect)
     runtime = util_models.RuntimeOptions()
     try:
         exp = client.query_available_instances_with_options(query_available_instances_request, runtime)
         exp_list = exp.body.to_map()['Data']['InstanceList']
+        logger.debug(f'==={account}到期资源: {exp_list}')
     except Exception as e:
         #exp_list = []
         logger.error(f'==ERROR=={e}\n{traceback.format_exc()}')
@@ -69,23 +79,56 @@ def exp(account,collect_days,notify_days,notify_amount):
     isnotify_list = consul_kv.get_keys_list(f'ConsulManager/exp/isnotify/alicloud/{account}')
     isnotify_list = [i.split('/')[-1] for i in isnotify_list]
     notify_dict = {}
+    resource_groups = consul_kv.get_kv_dict(f'ConsulManager/assets/alicloud/group/{account}')
+    renewstatus_dict = {'AutoRenewal':'自动续费','ManualRenewal':'手动续费','NotRenewal': '到期不续费'}
     for i in exp_list:
-        notify_id = hashlib.md5(str(i).encode(encoding='UTF-8')).hexdigest()
+        if i['ProductCode'] in ['ecs','rds','redis']:
+            meta = consul_svc.get_sid(i['InstanceID'])['instance']['Meta']
+            c_region = meta.get('region','Null')
+            group = meta.get('group','Null')
+            iname = meta.get('name','Null')
+            instace_status = i.get('Status','Null')
+        elif i['ProductCode'] == 'domain':
+            c_region = 'Null'
+            domain_obj = Domain(ak, sk)
+            domain_info = domain_obj.get_domain_info(i['InstanceID']).body.to_map()
+            logger.debug(f'{domain_info.get("ResourceGroupId", "Null")}\n{str(resource_groups)}')
+            group = resource_groups[f'ConsulManager/assets/alicloud/group/{account}'].get(domain_info.get('ResourceGroupId', 'Null'),'Null')
+            iname = domain_info.get('DomainName', 'Null')
+            instace_status = domain_info.get('DomainLifecycleStatus','Null')
+        else:
+            c_region = 'Null'
+            group = 'Null'
+            iname = 'Null'
+            instace_status = 'Null'
+        region = i.get('Region', 'Null')
+        product = i.get('ProductCode', 'Null')
+        ptype = i.get('ProductType', i['ProductCode'])
+        renewstatus = renewstatus_dict.get(i.get('RenewStatus','Null'),'Null')
         endtime = datetime.datetime.strptime(i['EndTime'],'%Y-%m-%dT%H:%M:%SZ') + datetime.timedelta(hours=8)
-        endtime_str = endtime.strftime('%Y-%m-%d')
-        logger.debug(f"{i['ProductCode']} {i['InstanceID']}")
-        iname = consul_svc.get_sid(i['InstanceID'])['instance']['Meta']['name'] if i['ProductCode'] == 'ecs' else 'Null'
-        exp_dict[i['InstanceID']] = {'Region':i.get('Region','Null'),'Product':i['ProductCode'],
-            'Name':iname,'EndTime':endtime_str,'notify_id':notify_id,
-            'Ptype':i.get('ProductType',i['ProductCode'])}
+        endtime_str = endtime.strftime('%Y-%m-%d %H:%M:%S')
+        notify_id = hashlib.md5(str(i).encode(encoding='UTF-8')).hexdigest()
+        
+        logger.info(f"【{account}】{i['ProductCode']}--{i['InstanceID']}--{c_region}--{group}--{iname}")
+        exp_dict[i['InstanceID']] = {'Region':region,'Cregion':c_region,'Product':product,'Group':group,
+            'Name':iname,'Ptype':ptype,'InstaceStatus':instace_status,'RenewStatus':renewstatus,
+            'EndTime':endtime_str,'notify_id':notify_id}
         if (endtime - datetime.datetime.now()).days < notify_days and notify_id not in isnotify_list:
             notify_dict[i['InstanceID']] = exp_dict[i['InstanceID']]
     consul_kv.put_kv(f'ConsulManager/exp/lists/alicloud/{account}/exp', exp_dict)
     if notify_dict != {}:
-        msg = [f'### 阿里云账号 {account}：\n### 以下资源到期日小于 {notify_days} 天：']
+        msg = [f'## 告警主信息\n---\n- 云厂商：阿里云\n- 云账号：**<font color=#008000>{account}</font>**\n- 告警规则：<font color=#FFA500>以下资源到期日小于 {notify_days} 天</font>\n---\n## 资源到期告警']
         for k,v in notify_dict.items():
             iname = k if v['Name'] == 'Null' else v['Name']
-            msg.append(f"- {v['Region']}：{v['Product']}：{iname}：<font color=\"#ff0000\">{v['EndTime']}</font>")
+            msg.append(f"---")
+            msg.append(f"- 项目分组：{v['Group']}")
+            msg.append(f"- Region：{v['Region']}【{v['Cregion']}】")
+            msg.append(f"- 资源类型：**<font color=#FFA500>{v['Product']}</font>**")
+            msg.append(f"- 实例名称：**<font color=#008000>{iname}</font>**")
+            msg.append(f"- 实例id：{k}")
+            msg.append(f"- 实例状态：**<font color=#FFA500>{v['InstaceStatus']}</font>**")
+            msg.append(f"- 到期时间：**<font color=ff0000>{v['EndTime']}</font>**")
+            msg.append(f"- 续费状态：{v['RenewStatus']}")
         content = '\n'.join(msg)
         if exp_config['switch'] and exp_config.get('wecom',False):
             notify.wecom(wecomwh,content)
