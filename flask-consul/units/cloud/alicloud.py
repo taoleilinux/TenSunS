@@ -19,7 +19,7 @@ from alibabacloud_domain20180129.client import Client as Domain20180129Client
 from alibabacloud_tea_openapi import models as open_api_models
 from alibabacloud_domain20180129 import models as domain_20180129_models
 
-import os,sys,json,datetime,hashlib,math,traceback
+import datetime,hashlib,math,traceback
 from units import consul_kv,consul_svc
 from units.cloud import sync_ecs,sync_rds,sync_redis,notify
 from units.config_log import *
@@ -97,10 +97,8 @@ def exp(account,collect_days,notify_days,notify_amount):
             iname = domain_info.get('DomainName', 'Null')
             instace_status = domain_info.get('DomainLifecycleStatus','Null')
         else:
-            c_region = 'Null'
-            group = 'Null'
-            iname = 'Null'
-            instace_status = 'Null'
+            c_region = group = iname = instace_status = 'Null'
+
         region = i.get('Region', 'Null')
         product = i.get('ProductCode', 'Null')
         ptype = i.get('ProductType', i['ProductCode'])
