@@ -88,6 +88,7 @@ def exp(account,collect_days,notify_days,notify_amount):
             group = meta.get('group','Null')
             iname = meta.get('name','Null')
             instace_status = i.get('Status','Null')
+            endtime = datetime.datetime.strptime(i['EndTime'],'%Y-%m-%dT%H:%M:%SZ') + datetime.timedelta(hours=8)
         elif i['ProductCode'] == 'domain':
             c_region = 'Null'
             domain_obj = Domain(ak, sk)
@@ -96,14 +97,15 @@ def exp(account,collect_days,notify_days,notify_amount):
             group = resource_groups[f'ConsulManager/assets/alicloud/group/{account}'].get(domain_info.get('ResourceGroupId', 'Null'),'Null')
             iname = domain_info.get('DomainName', 'Null')
             instace_status = domain_info.get('DomainLifecycleStatus','Null')
+            endtime = datetime.datetime.strptime(i['EndTime'],'%Y-%m-%dT%H:%M:%SZ')
         else:
             c_region = group = iname = instace_status = 'Null'
+            endtime = datetime.datetime.strptime(i['EndTime'],'%Y-%m-%dT%H:%M:%SZ')
 
         region = i.get('Region', 'Null')
         product = i.get('ProductCode', 'Null')
         ptype = i.get('ProductType', i['ProductCode'])
         renewstatus = renewstatus_dict.get(i.get('RenewStatus','Null'),'Null')
-        endtime = datetime.datetime.strptime(i['EndTime'],'%Y-%m-%dT%H:%M:%SZ') + datetime.timedelta(hours=8)
         endtime_str = endtime.strftime('%Y-%m-%d %H:%M:%S')
         notify_id = hashlib.md5(str(i).encode(encoding='UTF-8')).hexdigest()
         
